@@ -15,7 +15,7 @@ void renderWindow(SpectrumAnalyzer& analyzer, float sampleRate, size_t fftLength
 	sf::RenderWindow window(sf::VideoMode({1920, 1080}), "Spectrum Visualizer");
 	window.setFramerateLimit(60);
 
-	constexpr size_t numBars = 6;   // change freely now
+	constexpr size_t numBars = 64;   // change freely now
 	std::vector<FrequencyBand> bands = generateBands(numBars, 20, 20000);   // new
 
 	std::vector<sf::RectangleShape> bars(numBars);

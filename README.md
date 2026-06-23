@@ -1,117 +1,137 @@
-# CMake SFML Project Template
+# SFML RTOS Audio Visualizer
 
-This repository template should allow for a fast and hassle-free kick start of your next SFML project using CMake.
-Thanks to [GitHub's nature of templates](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template), you can fork this repository without inheriting its Git history.
+A real-time audio spectrum visualizer written in modern C++17, built from scratch as a hands-on study of real-time systems concepts: lock-free concurrency, deterministic audio callbacks, and a hand-rolled FFT. All in service of making music look as good as it sounds.
 
-The template starts out very basic, but might receive additional features over time:
+<!-- TODO: add a screenshot or GIF of the visualizer running here -->
+![Visualizer demo](docs/demo.gif)
 
-- Basic CMake script to build your project and link SFML on any operating system
-- Basic [GitHub Actions](https://github.com/features/actions) script for all major platforms
+## What this is
 
-## Quick start
+This project decodes and plays an audio file while simultaneously analyzing it in real time to drive a 6-band (configurable) frequency spectrum visualization. The interesting part isn't really the visuals, rather it's the architecture underneath them: three independent threads (the OS audio callback, an FFT analysis worker, and the render loop) cooperating without ever blocking each other, using lock-free data structures instead of mutexes.
 
-### Command line
+It started as a learning project to get hands-on with real-time/embedded-adjacent concepts. Things like: deterministic timing, atomics, memory ordering, avoiding allocation in hot paths using a domain (audio) where the constraints are real and audible rather than theoretical.
 
-1. Install [Git](https://git-scm.com/downloads) and [CMake](https://cmake.org/download/). Use your system's package manager if available.
-2. Follow [GitHub's instructions](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template) for how to use their project template feature to create your own project. If you don't want to use GitHub, see the section below.
-3. Clone your new GitHub repo and open the repo in your text editor of choice.
-4. Open [CMakeLists.txt](CMakeLists.txt). Rename the project and the target name of the executable to whatever name you want. Make sure to change all occurrences.
-5. If you want to add or remove any .cpp files, change the source files listed in the `add_executable` call in CMakeLists.txt to match the source files your project requires. If you plan on keeping the default main.cpp file then no changes are required.
-6. If your code uses the Audio or Network modules then add `SFML::Audio` or `SFML::Network` to the `target_link_libraries` call alongside the existing `SFML::Graphics` library that is being linked.
-7. If you use Linux, install SFML's dependencies using your system package manager. On Ubuntu and other Debian-based distributions you can use the following commands:
-   ```
-   sudo apt update
-   sudo apt install \
-       libxrandr-dev \
-       libxcursor-dev \
-       libxi-dev \
-       libudev-dev \
-       libfreetype-dev \
-       libflac-dev \
-       libvorbis-dev \
-       libgl1-mesa-dev \
-       libegl1-mesa-dev \
-       libfreetype-dev \
-       libharfbuzz-dev \
-       libmbedtls-dev \
-       libssh2-1-dev
-   ```
-8. Configure and build your project. Most popular IDEs support CMake projects with very little effort on your part.
+## Architecture
 
-   - [VS Code](https://code.visualstudio.com) via the [CMake extension](https://code.visualstudio.com/docs/cpp/cmake-linux)
-   - [Visual Studio](https://docs.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170)
-   - [CLion](https://www.jetbrains.com/clion/features/cmake-support.html)
-   - [Qt Creator](https://doc.qt.io/qtcreator/creator-project-cmake.html)
+```
+[ Audio callback thread ]  --writes-->  [ Lock-free ring buffer ]  --reads-->  [ FFT worker thread ]
+   (miniaudio, hard                     (atomic read/write indices,            (windowing, FFT,
+    real-time deadline)                 single-producer/consumer)               magnitude calc)
+                                                                                       |
+                                                                                double-buffered
+                                                                                atomic pointer swap
+                                                                                       |
+                                                                                       v
+                                                                              [ Render thread (SFML) ]
+                                                                               reads latest spectrum,
+                                                                               draws bars at 60fps
+```
 
-   Using CMake from the command line is straightforward as well.
-   Be sure to run these commands in the root directory of the project you just created.
+Three threads, two lock-free hand-offs, zero mutexes:
 
-   ```
-   cmake -B build
-   cmake --build build
-   ```
+- **Audio callback** — driven by the OS/sound device on a strict timing deadline. Decodes the file, mixes to mono, and writes samples into a ring buffer. Never blocks, never allocates.
+- **`AudioRingBuffer`** — a single-producer/single-consumer lock-free circular buffer using `std::atomic` indices with carefully chosen memory orderings (`relaxed` for an index's own thread, `acquire`/`release` across threads). Full buffer conditions overwrite the oldest data rather than blocking the writer, since live visualization cares more about freshness than completeness.
+- **`SpectrumAnalyzer`** — runs on its own thread, polling the ring buffer for new samples using overlapping FFT windows (a sliding window with a hop size smaller than the FFT length) so the spectrum updates more often than a fresh full window would otherwise allow, without sacrificing frequency resolution.
+- **`FFT`** — a hand-implemented iterative Cooley-Tukey FFT (no external FFT library), including bit-reversal permutation and a Hamming window to reduce spectral leakage.
+- **Spectrum publishing** — the analyzer publishes results to the render thread via double-buffering: two pre-allocated magnitude vectors that swap roles behind an atomic pointer, so the renderer always reads a complete, consistent snapshot without ever locking against the analyzer.
+- **Render loop** — runs on the main thread via SFML, capped to a target framerate, reading whatever the latest published spectrum is every frame, and decoupled entirely from how often the analyzer actually produces a new one.
 
-9. Enjoy!
+## Signal chain (raw FFT bins to what you see on screen)
 
-### Visual Studio
+The path from "FFT magnitude" to "bar height on screen" goes through several real audio-engineering steps, not just a direct mapping:
 
-Using a Visual Studio workspace is the simplest way to get started on windows.
+1. **Frequency banding** — FFT bins are grouped into a configurable number of bands, spaced evenly in octaves (log-frequency space) rather than linear Hz, matching how pitch is perceived.
+2. **dB conversion** — raw linear magnitude is converted to decibels (`20 * log10(magnitude)`), since loudness perception is logarithmic.
+3. **Frequency tilt compensation** — a per-band tilt is applied (relative to a reference frequency) to counteract the natural tendency of low frequencies to dominate a raw spectrum.
+4. **Adaptive auto-gain** — a custom `AutoGain` stage tracks a moving "ceiling" per band (with independent attack/release rates, akin to a compressor) so the display adapts to the song's actual dynamic range instead of using fixed bounds. Per-band and shared (global) ceiling tracking can be blended continuously via a single parameter.
+5. **Shaping curve** — a tunable exponent reshapes the normalized 0–1 range so the display sits lower at rest and requires genuine peaks to reach the top, rather than spending most of its time near the ceiling.
+6. **Elastic smoothing** — an asymmetric exponential moving average (slow attack, fast release) eases the displayed bar toward its target each frame, giving the bars a springy, non-jittery feel without literal spring physics.
 
-1. Ensure you have the [required components installed](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio#installation).
-2. Follow [GitHub's instructions](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template) for how to use their project template feature to create your own project.
-3. If you have already cloned this repo, you can [open the folder](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio0#ide-integration).
-4. If not, you can [clone it directly in Visual Studio](https://learn.microsoft.com/en-us/visualstudio/get-started/tutorial-open-project-from-repo).
+Every constant in this chain (band count, tilt amount, attack/release rates, shaping exponent) is exposed as a tunable parameter — there's no "correct" setting, just what looks best for a given genre/mix.
 
-Visual Studio should automatically configure the CMake project, then you can build and run as normal through Visual Studio. See the links above for more details.
+## Building
 
-## Upgrading SFML
+<!-- TODO: confirm/replace exact target name from CMakeLists.txt if different -->
 
-SFML is found via CMake's [FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html) module.
-FetchContent automatically downloads SFML from GitHub and builds it alongside your own code.
-Beyond the convenience of not having to install SFML yourself, this ensures ABI compatibility and simplifies things like specifying static versus shared libraries.
+### Prerequisites
 
-Modifying what version of SFML you want is as easy as changing the `GIT_TAG` argument.
-Currently it uses SFML 3 via the `3.1.0` tag.
+- CMake 3.28+
+- A C++17-compatible compiler (GCC, Clang, or MSVC)
+- On Linux, SFML's system dependencies:
 
-## But I want to...
+```bash
+sudo apt update
+sudo apt install \
+    libxrandr-dev libxcursor-dev libxi-dev libudev-dev \
+    libfreetype-dev libflac-dev libvorbis-dev \
+    libgl1-mesa-dev libegl1-mesa-dev libharfbuzz-dev \
+    libmbedtls-dev libssh2-1-dev
+```
 
-Modify CMake options by adding them as configuration parameters (with a `-D` flag) or by modifying the contents of CMakeCache.txt and rebuilding.
+Dependencies (SFML, miniaudio, dr_libs) are fetched automatically via CMake's `FetchContent` — no manual installation needed beyond the system libraries above.
 
-### Not use GitHub
+### Build
 
-You can use this project without a GitHub account by [downloading the contents](https://github.com/SFML/cmake-sfml-project/archive/refs/heads/master.zip) of the repository as a ZIP archive and unpacking it locally.
-This approach also avoids using Git entirely if you would prefer to not do that.
+```bash
+cmake -B build
+cmake --build build
+```
 
-### Change Compilers
+The compiled binary will be in `build/bin`.
 
-See the variety of [`CMAKE_<LANG>_COMPILER`](https://cmake.org/cmake/help/latest/variable/CMAKE_LANG_COMPILER.html) options.
-In particular you'll want to modify `CMAKE_CXX_COMPILER` to point to the C++ compiler you wish to use.
+### Run
 
-### Change Compiler Optimizations
+<!-- TODO: confirm exact invocation / how the audio file path is provided (hardcoded vs argv) -->
+```bash
+./build/bin/main
+```
 
-CMake abstracts away specific optimizer flags through the [`CMAKE_BUILD_TYPE`](https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html) option.
-By default this project recommends `Release` builds which enable optimizations.
-Other build types include `Debug` builds which enable debug symbols but disable optimizations.
-If you're using a multi-configuration generator (as is often the case on Windows), you can modify the [`CMAKE_CONFIGURATION_TYPES`](https://cmake.org/cmake/help/latest/variable/CMAKE_CONFIGURATION_TYPES.html#variable:CMAKE_CONFIGURATION_TYPES) option.
+> Currently the audio file path is set in `main.cpp`. Replace it with the path to your own audio file (WAV/MP3/FLAC, anything `dr_libs`/miniaudio can decode) before building, or update the code to accept a command-line argument.
 
-### Change Generators
+## Project structure
 
-While CMake will attempt to pick a suitable default generator, some systems offer a number of generators to choose from.
-Ubuntu, for example, offers Makefiles and Ninja as two potential options.
-For a list of generators, click [here](https://cmake.org/cmake/help/latest/manual/cmake-generators.7.html).
-To modify the generator you're using you must reconfigure your project providing a `-G` flag with a value corresponding to the generator you want.
-You can't simply modify an entry in the CMakeCache.txt file unlike the above options.
-Then you may rebuild your project with this new generator.
+```
+src/
+├── main.cpp                  # ties everything together, owns the render loop
+├── audio/
+│   ├── AudioPlayer.h/.cpp    # decodes & plays audio via miniaudio; owns the real-time callback
+│   ├── AudioRingBuffer.h     # lock-free single-producer/consumer ring buffer
+│   └── FrequencyBand.h/.cpp  # band definitions, band-generation, bin averaging
+└── analysis/
+    ├── FFT.h/.cpp            # hand-rolled iterative Cooley-Tukey FFT
+    ├── SpectrumAnalyzer.h    # worker thread: sliding-window FFT + result publishing
+    └── AutoGain.h/.cpp       # adaptive per-band/shared dB normalization
+```
 
-## More Reading
+## Configuration knobs
 
-Here are some useful resources if you want to learn more about CMake:
+A few of the more interesting parameters to tune by ear, scattered through `main.cpp` and the relevant classes:
 
-- [Official CMake Tutorial](https://cmake.org/cmake/help/latest/guide/tutorial/)
-- [How to Use CMake Without the Agonizing Pain - Part 1](https://alexreinking.com/blog/how-to-use-cmake-without-the-agonizing-pain-part-1.html)
-- [How to Use CMake Without the Agonizing Pain - Part 2](https://alexreinking.com/blog/how-to-use-cmake-without-the-agonizing-pain-part-2.html)
-- [Better CMake YouTube series by Jefferon Amstutz](https://www.youtube.com/playlist?list=PL8i3OhJb4FNV10aIZ8oF0AA46HgA2ed8g)
+| Parameter | Where | Effect |
+|---|---|---|
+| `numBars` | `main.cpp` | Number of frequency bands/bars (bands are auto-generated, evenly spaced in octaves) |
+| `fftLength` | `SpectrumAnalyzer` | FFT window size — trade-off between frequency resolution and update latency |
+| `hopSize` | `SpectrumAnalyzer` | Overlap amount between consecutive FFT windows — should match or divide the audio device's callback buffer size |
+| `attack` / `release` | `AutoGain` constructor | How quickly the adaptive ceiling rises to loud peaks vs. falls back down during quiet passages |
+| `blend` | `AutoGain` constructor | 0.0 = fully per-band normalization, 1.0 = fully shared/global normalization |
+| shaping exponent | `main.cpp` render loop | How aggressively mid-range values are pulled toward the floor before display |
+| attack/release `rate` | `main.cpp` render loop | Visual easing speed of the displayed bar toward its target height |
+
+### _Note: these configuration options will soon be moved into the main method to be set individually rather than having to search the code for the value to change._
+## What this project deliberately avoids
+
+In the spirit of the real-time-systems learning goal:
+
+- **No mutexes anywhere in the audio→analysis→render path** — every hand-off is lock-free, using `std::atomic` with deliberately chosen memory orderings.
+- **No allocation in the audio callback** — all buffers are pre-sized and reused.
+- **No external FFT library** — the FFT is implemented from scratch (translated and adapted from an earlier Java implementation of the same algorithm).
 
 ## License
 
-The source code is dual licensed under Public Domain and MIT -- choose whichever you prefer.
+<!-- TODO: confirm — LICENSE.md exists in the repo; mirror its actual terms here -->
+See [LICENSE.md](LICENSE.md).
+
+## Acknowledgments
+
+- [miniaudio](https://github.com/mackron/miniaudio) and [dr_libs](https://github.com/mackron/dr_libs) for audio decoding/playback
+- [SFML](https://www.sfml-dev.org/) for windowing and rendering
