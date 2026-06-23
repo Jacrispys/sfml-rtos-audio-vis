@@ -38,6 +38,14 @@ public:
         }
         readIndex.store(tmpIndex, std::memory_order_release);
     }
+
+    bool canRead(size_t sampleCount) {
+        size_t w = writeIndex.load(std::memory_order_acquire);
+        size_t r = readIndex.load(std::memory_order_relaxed);
+
+        size_t available = (w - r) & WRAP_MASK;
+        return available >= sampleCount;
+    }
 };
 
 

@@ -2,9 +2,10 @@
 
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <thread>
 
-AudioPlayer::AudioPlayer(const char* file_path) {
+AudioPlayer::AudioPlayer(const char* file_path, AudioRingBuffer& ringBuffer): ringBuffer(ringBuffer)  {
     ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, 2, 48000);
     if (ma_decoder_init_file(file_path, &decoderConfig, &decoder) != MA_SUCCESS) {
         throw std::runtime_error("Failed to load audio file");
@@ -26,6 +27,7 @@ void AudioPlayer::data_callback(ma_device *pDevice, void *pOutput, const void *p
 
     ma_uint64 framesRead = 0;
     ma_decoder_read_pcm_frames(&self->decoder, pOutput, frameCount,  &framesRead);
+
 
     if (framesRead < frameCount) {
         // zero out remaining frames after file ends

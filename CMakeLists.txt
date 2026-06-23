@@ -36,7 +36,12 @@ add_executable(main src/main.cpp
         src/audio/AudioRingBuffer.h
         src/analysis/FFT.cpp
         src/analysis/FFT.h
-        src/analysis/SpectrumAnalyzer.h)
+        src/analysis/SpectrumAnalyzer.h
+        src/audio/FrequencyBand.h
+        src/audio/FrequencyBand.h
+        src/util/MinMaxTracker.h
+        src/analysis/AutoGain.cpp
+        src/analysis/AutoGain.h)
 target_compile_features(main PRIVATE cxx_std_17)
 target_include_directories(main PRIVATE ${miniaudio_SOURCE_DIR})
 target_link_libraries(main PRIVATE SFML::Graphics)

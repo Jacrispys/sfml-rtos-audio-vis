@@ -4,3 +4,5 @@ out
 .idea
 .vs
 .vscode
+/resources/
+cmake-build-debug/
