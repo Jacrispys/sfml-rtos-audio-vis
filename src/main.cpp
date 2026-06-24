@@ -15,8 +15,8 @@ void renderWindow(SpectrumAnalyzer& analyzer, float sampleRate, size_t fftLength
 	sf::RenderWindow window(sf::VideoMode({1920, 1080}), "Spectrum Visualizer");
 	window.setFramerateLimit(60);
 
-	constexpr size_t numBars = 64;   // change freely now
-	std::vector<FrequencyBand> bands = generateBands(numBars, 20, 20000);   // new
+	constexpr size_t numBars = 128;
+	std::vector<FrequencyBand> bands = generateBands(numBars, 20, 20000);
 
 	std::vector<sf::RectangleShape> bars(numBars);
 	std::vector<float> displayedHeights(numBars, 0.0f);
@@ -25,11 +25,11 @@ void renderWindow(SpectrumAnalyzer& analyzer, float sampleRate, size_t fftLength
 	float windowWidth = 1920.0f;
 	float windowHeight = 1080.0f;
 	float centerY = windowHeight / 2.0f;
-	float barWidth = (1920.0f / 1.5f) / numBars;   // changed — see below
+	float barWidth = (1920.0f / 1.5f) / numBars;
 
 	barWidth = std::min(50.0f, barWidth);
 
-	std::vector<float> bandTilt(numBars);   // changed from fixed-size array — see below
+	std::vector<float> bandTilt(numBars);
 	const float referenceHz = 750.0f;
 	const float tiltPerOctave = 3.25f;
 
@@ -50,17 +50,17 @@ void renderWindow(SpectrumAnalyzer& analyzer, float sampleRate, size_t fftLength
 
 		const auto& mags = analyzer.getMagnitudes();
 
-		std::vector<float> bandDb(numBars);   // changed — see below
+		std::vector<float> bandDb(numBars);
 		const float maxBarHeight = windowHeight * 0.8f;
 
 		for (size_t i = 0; i < numBars; i++) {
-			float avg = averageBandMagnitude(mags, bands[i], sampleRate, fftLength);   // bands[i], not BANDS[i]
+			float avg = averageBandMagnitude(mags, bands[i], sampleRate, fftLength);
 			float bandCenterHz = std::sqrt(bands[i].lowHz * bands[i].highHz);
 			bandTilt[i] = tiltPerOctave * std::log2(bandCenterHz / referenceHz);
 			bandDb[i] = magnitudeToDb(avg) + bandTilt[i];
 		}
 
-		std::vector<float> normalized(numBars);   // changed — see below
+		std::vector<float> normalized(numBars);
 		autoGain.normalize(bandDb.data(), normalized.data(), numBars);
 
 		for (size_t i = 0; i < numBars; i++) {
@@ -84,7 +84,7 @@ void renderWindow(SpectrumAnalyzer& analyzer, float sampleRate, size_t fftLength
 
 void runVisualizer() {
 	AudioRingBuffer ringBuffer;
-	AudioPlayer player("../../resources/sicko_mode.mp3", ringBuffer );
+	AudioPlayer player("../../resources/I_Had_Some_Help.mp3", ringBuffer );
 	SpectrumAnalyzer analyzer(ringBuffer);
 
 	analyzer.start();
